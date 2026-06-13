@@ -4,7 +4,7 @@
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 
-echo "Starting MacWhisperer..."
+echo "Starting SiriNo Whisperer..."
 echo "Note: If hotkeys do not work, please ensure Terminal/iTerm has 'Accessibility' permissions in System Settings -> Privacy & Security."
 
 # Configuration

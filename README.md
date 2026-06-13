@@ -1,6 +1,6 @@
-# MacWhisperer 🎙️
+# SiriNo Whisperer 🎙️
 
-Welcome to **MacWhisperer**! This is my own personal implementation and flavor of OpenAI's Whisper speech-to-text neural network, specifically tailored and optimized for Mac users.
+Welcome to **SiriNo Whisperer**! This is my own personal implementation and flavor of OpenAI's Whisper speech-to-text neural network, specifically tailored and optimized for Mac users.
 
 It runs entirely locally on your Mac's Apple Silicon GPU using the MLX framework, meaning it requires **zero internet connection**, has **zero API costs**, and fully respects your **privacy**.
 
@@ -32,7 +32,7 @@ This script will automatically:
 4. Download all the required AI libraries
 
 ### 2. Permissions
-MacWhisperer uses AppleScript and `pynput` to securely navigate between your apps. 
+SiriNo Whisperer uses AppleScript and `pynput` to securely navigate between your apps. 
 The first time you run it, macOS will ask you to grant **Accessibility Permissions** to your Terminal application (System Settings -> Privacy & Security -> Accessibility).
 
 ## 🎮 How It Works
@@ -44,7 +44,7 @@ To start the background listener, simply double-click the `start_whisper.command
 2. **Trigger:** Tap the **Right Option** key on your keyboard and start speaking.
 3. **The Floating Window:** The moment you start speaking, a semi-transparent floating UI window will appear at the bottom of your screen. As you speak, you will see a live preview of the AI transcribing your voice in real-time.
 4. **Pause & Edit:** If you need to pause to gather your thoughts, just tap the **Right Command** key. You can actually click directly into the floating window and use your keyboard to manually fix any typos or edit the text mid-sentence!
-5. **Multi-Tasking:** If you need to read an email on another screen while dictating, simply click out of the MacWhisperer window. It will keep listening. When you are done reading, click the floating window to re-focus it.
+5. **Multi-Tasking:** If you need to read an email on another screen while dictating, simply click out of the SiriNo Whisperer window. It will keep listening. When you are done reading, click the floating window to re-focus it.
 6. **Paste:** When you are finished, press **Enter**. The floating window will vanish, warp you back to the exact app you were originally typing in, and instantly paste your text!
 
 ## ⚙️ Customization

@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "🚀 Welcome to MacWhisperer Installer!"
+echo "🚀 Welcome to SiriNo Whisperer Installer!"
 echo "This script will automatically set up everything you need."
 echo "---------------------------------------------------------"
 

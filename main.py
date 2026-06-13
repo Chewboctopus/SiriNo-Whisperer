@@ -22,11 +22,11 @@ dotenv.load_dotenv()
 def check_setup():
     if not os.environ.get("HF_TOKEN"):
         root = tk.Tk()
-        root.title("MacWhisperer Setup")
+        root.title("SiriNo Whisperer Setup")
         root.geometry("500x200")
         root.attributes('-topmost', True)
         
-        tk.Label(root, text="Welcome to MacWhisperer! 🎙️", font=("Helvetica", 16, "bold")).pack(pady=10)
+        tk.Label(root, text="Welcome to SiriNo Whisperer! 🎙️", font=("Helvetica", 16, "bold")).pack(pady=10)
         tk.Label(root, text="To download the local AI model, please enter your Hugging Face Token:").pack()
         
         entry = tk.Entry(root, width=50)
@@ -49,13 +49,13 @@ check_setup()
 # If a rogue background process is already running, this will automatically
 # hunt it down and kill it so you always get a fresh start!
 def kill_previous_instance():
-    pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macwhisperer.pid")
+    pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sirino.pid")
     if os.path.exists(pid_file):
         try:
             with open(pid_file, "r") as f:
                 old_pid = int(f.read().strip())
             
-            # SECURITY FIX: Verify the PID actually belongs to MacWhisperer before murdering it!
+            # SECURITY FIX: Verify the PID actually belongs to SiriNo Whisperer before murdering it!
             # If macOS recycled the PID and gave it to Chrome, we do NOT want to kill Chrome.
             import subprocess
             cmd = subprocess.run(['ps', '-p', str(old_pid), '-o', 'command='], capture_output=True, text=True).stdout
@@ -98,7 +98,7 @@ REPLACEMENTS = {
     " uh ": " "
 }
 
-class MacWhispererApp:
+class SiriNo WhispererApp:
     def __init__(self):
         self.recording = False
         self.audio_data = []
@@ -119,7 +119,7 @@ class MacWhispererApp:
         except Exception:
             pass
             
-        self.root.title("MacWhisperer Preview")
+        self.root.title("SiriNo Whisperer Preview")
         self.root.attributes('-topmost', True) # Always on top
         self.root.attributes('-alpha', 0.95) # Mostly opaque for readability
         self.root.configure(bg='#1e1e1e')
@@ -220,7 +220,7 @@ class MacWhispererApp:
         print("🎤 Recording started...")
         self.play_sound("Ping")
         self.recording = True
-        self.root.title("MacWhisperer - 🔴 LIVE (Tap Right Option to Pause)")
+        self.root.title("SiriNo Whisperer - 🔴 LIVE (Tap Right Option to Pause)")
         
         # If the window is already visible, the user is resuming a paused recording.
         # We must save their edited text before clearing the audio buffer!
@@ -264,7 +264,7 @@ class MacWhispererApp:
         print("⏸️ Recording paused (Editable).")
         self.play_sound("Pop")
         self.recording = False
-        self.root.title("MacWhisperer - ⏸️ PAUSED (Edit your text, then press Enter to Paste)")
+        self.root.title("SiriNo Whisperer - ⏸️ PAUSED (Edit your text, then press Enter to Paste)")
         # Window stays open so the user can edit!
 
     def on_enter(self, event):
@@ -440,7 +440,7 @@ class MacWhispererApp:
 
     def run(self):
         print("="*40)
-        print("🎙️ MacWhisperer Background Service (Live Editable UI)")
+        print("🎙️ SiriNo Whisperer Background Service (Live Editable UI)")
         print(f"Mode: {MODE.upper()}")
         
         if MODE == "cloud" and not os.environ.get("OPENAI_API_KEY"):
@@ -461,5 +461,5 @@ class MacWhispererApp:
         self.root.mainloop()
 
 if __name__ == "__main__":
-    app = MacWhispererApp()
+    app = SiriNo WhispererApp()
     app.run()
