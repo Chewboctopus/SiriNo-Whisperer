@@ -98,7 +98,7 @@ REPLACEMENTS = {
     " uh ": " "
 }
 
-class SiriNo WhispererApp:
+class SiriNoWhispererApp:
     def __init__(self):
         self.recording = False
         self.audio_data = []
@@ -461,5 +461,5 @@ class SiriNo WhispererApp:
         self.root.mainloop()
 
 if __name__ == "__main__":
-    app = SiriNo WhispererApp()
+    app = SiriNoWhispererApp()
     app.run()
