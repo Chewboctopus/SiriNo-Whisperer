@@ -7,7 +7,6 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 import mlx_whisper
-import openai
 from pynput import keyboard
 import tkinter as tk
 import queue
