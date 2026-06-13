@@ -14,4 +14,4 @@ echo "Note: If hotkeys do not work, please ensure Terminal/iTerm has 'Accessibil
 source venv/bin/activate
 
 # Run the python script
-python main.py
+python3 main.py
