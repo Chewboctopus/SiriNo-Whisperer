@@ -83,9 +83,12 @@ SAMPLE_RATE = 16000
 CHUNK_INTERVAL = 0.5  # Transcribe every 0.5 seconds
 
 # Custom Jargon Dictionary
-# Add your custom names, software, or industry jargon here separated by commas.
-# This mathematically forces the AI to spell these exact words when it hears similar sounds!
-JARGON = "FreePik, Magnific, ComfyUI, Antigravity, DaVinci Resolve, nodes, workflows"
+# Automatically loads from your private 'jargon.txt' file so it doesn't get pushed to GitHub!
+JARGON = ""
+jargon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jargon.txt")
+if os.path.exists(jargon_path):
+    with open(jargon_path, "r") as f:
+        JARGON = f.read().strip()
 
 # Word Replacements (Banned Words & Auto-Correct)
 # If the AI constantly mishears a word, or you want to ban filler words like "um", 
@@ -94,7 +97,9 @@ REPLACEMENTS = {
     " gonna ": " going to ",
     " gonna.": " going to.",
     " um ": " ",
-    " uh ": " "
+    " uh ": " ",
+    "free pick": "Freepik",
+    "free pic": "Freepik"
 }
 
 class SiriNoWhispererApp:
