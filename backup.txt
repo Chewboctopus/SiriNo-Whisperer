@@ -1,1 +1,1 @@
-FreePik has become Magnific recently. I used to use Runaway a lot. I used Luma a lot. I use ComfyUI. I used to use beta SP. I used to produce things in standard depth and high depth. Then 4K, SDR, then HDR. Went from film to tape, tape to file based, drives to cloud. 
+Great, this seems to be working as expected, can we please push it to the get?

@@ -13,6 +13,7 @@ import queue
 import signal
 import sys
 import dotenv
+from pynput.mouse import Controller as MouseController
 
 # Load secure environment variables
 dotenv.load_dotenv()
@@ -99,7 +100,11 @@ REPLACEMENTS = {
     " um ": " ",
     " uh ": " ",
     "free pick": "Freepik",
-    "free pic": "Freepik"
+    "free pic": "Freepik",
+    "serino": "SiriNo",
+    "cyrano": "SiriNo",
+    "Cimes": "seems",
+    "cimes": "seems"
 }
 
 class SiriNoWhispererApp:
@@ -111,6 +116,14 @@ class SiriNoWhispererApp:
         self.text_prefix = ""
         self.session_id = 0
         self.target_app = ""
+        self.breadcrumb_pos = (0, 0)
+        self.focus_lost_to_ui = False
+        self.is_window_open = False
+        self.last_alt_r_time = 0
+        
+        # Initialize CoreGraphics Controllers on the MAIN thread to prevent macOS BPT Trap 5 crashes!
+        self.keyboard_controller = keyboard.Controller()
+        self.mouse_controller = MouseController()
         
         # Setup UI
         self.root = tk.Tk()
@@ -194,29 +207,38 @@ class SiriNoWhispererApp:
     def on_release(self, key):
         # Right Option: Start OR Submit
         if key == keyboard.Key.alt_r:
-            if self.root.state() == "withdrawn":
+            # Debounce: Prevent software-emulated key releases (from paste_text_mac) from double-launching!
+            current_time = time.time()
+            if current_time - getattr(self, 'last_alt_r_time', 0) < 0.5:
+                return
+            self.last_alt_r_time = current_time
+            
+            if not getattr(self, 'is_window_open', False):
                 # Start fresh recording
                 self.ui_queue.put(self.start_recording)
             else:
-                # If window is open, Right Option submits and pastes globally!
-                self.ui_queue.put(self.submit_and_paste)
+                # Window is open. Check if we are paused!
+                if not getattr(self, 'recording', False):
+                    # We are in Edit Mode (Paused). Resume Transcription!
+                    self.ui_queue.put(self.start_recording)
+                else:
+                    # We are in Transcription Mode (Live). Submit and Paste!
+                    self.ui_queue.put(self.submit_and_paste)
                 
         # Right Command: Pause / Resume (Only works if a session is active)
         elif key == keyboard.Key.cmd_r:
-            if self.root.state() != "withdrawn":
+            if getattr(self, 'is_window_open', False):
                 if self.recording:
                     self.ui_queue.put(self.stop_recording)
                 else:
                     self.ui_queue.put(self.start_recording)
 
     def play_sound(self, sound_name):
-        # SECURITY FIX: Use native macOS AppKit to play sounds in-memory.
-        # This prevents spawning hundreds of `afplay` zombie subprocesses!
+        # Use afplay instead of NSSound to prevent background execution Thread/BPT traps 
+        # when running alongside Tkinter and MLX on macOS.
         try:
-            from AppKit import NSSound
-            sound = NSSound.soundNamed_(sound_name)
-            if sound:
-                sound.play()
+            import subprocess
+            subprocess.Popen(["afplay", f"/System/Library/Sounds/{sound_name}.aiff"])
         except Exception:
             pass
 
@@ -224,11 +246,11 @@ class SiriNoWhispererApp:
         print("🎤 Recording started...")
         self.play_sound("Ping")
         self.recording = True
-        self.root.title("SiriNo Whisperer - 🔴 LIVE (Tap Right Option to Pause)")
+        self.root.title("SiriNo Whisperer - 🔴 LIVE (Tap Right Option to Submit)")
         
         # If the window is already visible, the user is resuming a paused recording.
         # We must save their edited text before clearing the audio buffer!
-        if self.root.state() != "withdrawn":
+        if getattr(self, 'is_window_open', False):
             current_text = self.text_widget.get("1.0", "end-1c").strip()
             if current_text and current_text != "Listening...":
                 self.text_prefix = current_text + " "
@@ -237,22 +259,26 @@ class SiriNoWhispererApp:
         else:
             self.session_id += 1
             self.text_prefix = ""
+            self.focus_lost_to_ui = False
             
-            # Remember the exact app the user was in before we steal focus!
+            # Drop a Mouse Coordinate Breadcrumb!
             try:
-                from AppKit import NSWorkspace
-                self.target_app = NSWorkspace.sharedWorkspace().frontmostApplication().localizedName()
+                self.breadcrumb_pos = self.mouse_controller.position
             except Exception:
-                self.target_app = ""
+                pass
                 
             self.text_widget.delete("1.0", tk.END)
             self.text_widget.insert(tk.END, "Listening...")
+            
+            self.root.attributes('-topmost', True)
+            self.is_window_open = True
             self.root.deiconify() # Show window
             self.root.lift()      # Force to top
             self.root.update()    # Force render
             
-            # Force the CURRENT Python process to take keyboard focus (System Events prevents spawning duplicate ghost apps)
+            # FORCE Python to take focus so we don't end up in macOS Focus Limbo
             try:
+                import subprocess
                 subprocess.Popen(['osascript', '-e', 'tell application "System Events" to set frontmost of process "Python" to true'])
             except:
                 pass
@@ -277,26 +303,34 @@ class SiriNoWhispererApp:
 
     def on_escape(self, event):
         self.recording = False
+        self.is_window_open = False
         self.root.withdraw()
         return "break"
 
     def on_close_window(self):
         self.recording = False
+        self.is_window_open = False
         self.root.withdraw()
 
     def submit_and_paste(self):
         self.recording = False
+        self.is_window_open = False
         
         # Extract the final edited text directly from the UI widget
         final_text = self.text_widget.get("1.0", "end-1c").strip()
-        if final_text == "Listening...":
-            final_text = ""
-            
-        self.root.withdraw() # Hide window
+        # Clear the widget immediately for the next run
+        self.text_widget.delete("1.0", tk.END)
+        self.root.withdraw()
         
-        if final_text:
-            # Run paste in background thread to prevent AppleScript delay from blocking Tkinter
+        if final_text and final_text != "Listening...":
+            # Fire the paste macro in a background thread so we don't freeze the UI event loop!
+            import threading
             threading.Thread(target=self.paste_text_mac, args=(final_text,), daemon=True).start()
+
+    def execute_mouse_click(self):
+        from pynput.mouse import Button
+        self.mouse_controller.position = getattr(self, 'breadcrumb_pos', (0, 0))
+        self.mouse_controller.click(Button.left)
 
     def transcription_loop(self):
         while True:
@@ -382,7 +416,11 @@ class SiriNoWhispererApp:
                 
                 # Fix capitalizations at the start of the string if it was replaced
                 if len(text) > 0:
-                    text = text[0].upper() + text[1:]
+                    # Whisper Hallucination Fix: Overly capitalized initial prompts cause ALL CAPS
+                    if text.isupper() and len(text) > 5:
+                        text = text.capitalize()
+                    else:
+                        text = text[0].upper() + text[1:]
                 
                 return text
             
@@ -414,33 +452,53 @@ class SiriNoWhispererApp:
             pass
 
     def paste_text_mac(self, text):
-        escaped_text = text.replace('\\', '\\\\').replace('"', '\\"')
+        import time
+        import subprocess
+        from pynput.keyboard import Controller, Key
         
-        # Explicitly reactivate the app the user was in when they started recording
-        activate_script = "delay 0.2"
-        if getattr(self, 'target_app', ""):
-            # SECURITY FIX: Intelligent polling loop. Wait exactly until the target app 
-            # confirms it has stolen keyboard focus back before we fire the Paste command!
-            activate_script = f'''
-            tell application "{self.target_app}" to activate
-            repeat 20 times
-                tell application "System Events"
-                    try
-                        if frontmost of application process "{self.target_app}" then exit repeat
-                    end try
-                end tell
-                delay 0.05
-            end repeat
-            '''
-            
-        script = f'''
-        {activate_script}
+        # 1. Set the clipboard using native macOS pbcopy (most reliable)
+        process = subprocess.Popen(['pbcopy'], stdin=subprocess.PIPE)
+        process.communicate(text.encode('utf-8'))
+        
+        # 2. Hide Python natively to gracefully restore focus!
+        # Instead of aggressively forcing Chrome to activate (which blurs its internal DOM),
+        # we simply hide the Python process. macOS natively falls back to the exact previous 
+        # app (Chrome) and perfectly preserves the blinking text cursor!
+        hide_script = '''
         tell application "System Events"
-            set the clipboard to "{escaped_text}"
+            set visible of process "Python" to false
+        end tell
+        '''
+        subprocess.run(['osascript', '-e', hide_script])
+        
+        # Give macOS WindowServer time to transition the active app
+        time.sleep(0.5)
+        
+        # 3. Defeat Web App DOM Blur!
+        # Modern web apps (like Gemini or WhatsApp) intentionally drop their text cursor
+        # via Javascript when the OS window loses focus. The OS transition alone isn't enough.
+        # We must physically click the mouse breadcrumb to force the JS to wake up!
+        self.root.after(0, self.execute_mouse_click)
+        time.sleep(0.3) # Wait for web DOM to focus the text area
+            
+        # 4. Give the user a tiny fraction of a second to lift their physical finger off the 
+        # Right Option key so it doesn't cause modifier interference (Cmd+Option+V).
+        time.sleep(0.2)
+        
+        # 5. Paste using native AppleScript (100% reliable, bypasses pynput modifier issues)!
+        # This completely bypasses Chrome's internal AppleScript routing bugs and 
+        # forcefully drops the text exactly where the system cursor is blinking!
+        
+        # Give user time to physically release Right Option
+        time.sleep(0.3)
+        
+        # Paste using native AppleScript (100% reliable, bypasses pynput modifier issues)
+        paste_script = '''
+        tell application "System Events"
             keystroke "v" using command down
         end tell
         '''
-        subprocess.run(['osascript', '-e', script])
+        subprocess.run(['osascript', '-e', paste_script])
 
     def run(self):
         print("="*40)
