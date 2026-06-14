@@ -210,11 +210,10 @@ class SiriNoWhispererApp:
         # Hide initially
         self.root.withdraw()
         
-        # --- Audio ---
+        # --- Audio (created but NOT started — mic activates on-demand) ---
         self.stream = sd.InputStream(
             samplerate=SAMPLE_RATE, channels=1, callback=self._audio_callback
         )
-        self.stream.start()
         
         # --- Start threads ---
         self._worker_thread.start()
@@ -287,6 +286,10 @@ class SiriNoWhispererApp:
         self.recording = True
         self.root.title("SiriNo Whisperer - 🔴 LIVE (Tap Right Option to Submit)")
         
+        # Activate the microphone
+        if not self.stream.active:
+            self.stream.start()
+        
         if self.is_window_open:
             # Resuming a paused session — split text at cursor position
             # so new transcription is inserted exactly where the user left their cursor.
@@ -347,6 +350,7 @@ class SiriNoWhispererApp:
         print("⏸️ Recording paused (Editable).")
         self.play_sound("Pop")
         self.recording = False
+        self.stream.stop()  # Release the mic
         self.root.title("SiriNo Whisperer - ⏸️ PAUSED (Edit your text, then press Enter to Paste)")
 
     def on_enter(self, event):
@@ -363,6 +367,7 @@ class SiriNoWhispererApp:
     def _cancel_session(self):
         self.recording = False
         self.is_window_open = False
+        self.stream.stop()  # Release the mic
         with self.audio_lock:
             self.text_prefix = ""
             self.text_suffix = ""
@@ -372,6 +377,7 @@ class SiriNoWhispererApp:
     def submit_and_paste(self):
         self.recording = False
         self.is_window_open = False
+        self.stream.stop()  # Release the mic
         
         final_text = self.text_widget.get("1.0", "end-1c").strip()
         self.text_widget.delete("1.0", tk.END)
