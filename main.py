@@ -414,13 +414,23 @@ class SiriNoWhispererApp:
                     import re
                     text = re.sub(re.escape(bad_word), good_word, text, flags=re.IGNORECASE)
                 
-                # Fix capitalizations at the start of the string if it was replaced
+                # --- De-Shouting Filter ---
                 if len(text) > 0:
-                    # Whisper Hallucination Fix: Overly capitalized initial prompts cause ALL CAPS
-                    if text.isupper() and len(text) > 5:
+                    # 1. If the ENTIRE chunk is shouted, fix it.
+                    if text.isupper() and len(text) > 4:
                         text = text.capitalize()
                     else:
-                        text = text[0].upper() + text[1:]
+                        # 2. Whisper often shouts just the FIRST word (e.g., "TESTING, see if this works.")
+                        # We only fix it if it's > 4 letters to safely preserve short acronyms (USA, NASA, CEO)
+                        words = text.split(" ", 1)
+                        first_word_alpha = "".join([c for c in words[0] if c.isalpha()])
+                        if first_word_alpha.isupper() and len(first_word_alpha) > 4:
+                            words[0] = words[0].capitalize()
+                            text = " ".join(words)
+                            
+                        # Ensure standard sentence capitalization
+                        if len(text) > 0:
+                            text = text[0].upper() + text[1:]
                 
                 return text
             
