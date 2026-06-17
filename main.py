@@ -6,13 +6,11 @@ import time
 import zlib
 import queue
 import signal
-import tempfile
 import threading
 import subprocess
 
 import numpy as np
 import sounddevice as sd
-import soundfile as sf
 import mlx_whisper
 import dotenv
 import tkinter as tk
@@ -79,24 +77,28 @@ kill_previous_instance()
 # Configuration
 # ──────────────────────────────────────────────────────────────────────
 MODE = os.environ.get("WHISPER_MODE", "local").lower()
+DEBUG = os.environ.get("WHISPER_DEBUG", "").strip() == "1"
 HOTKEY = 'Right Option (Toggle)'
 
-# mlx-community/whisper-tiny-mlx   = Absolute fastest, lowest accuracy
-# mlx-community/whisper-base-mlx   = Excellent speed, much better accuracy
-# mlx-community/whisper-small-mlx  = Balanced: good accuracy, moderate speed
-# mlx-community/whisper-large-v3-turbo = State of the art, but requires more RAM
-MODEL = "mlx-community/whisper-large-v3-turbo"
+# mlx-community/whisper-tiny-mlx        = Absolute fastest, lowest accuracy
+# mlx-community/whisper-base-mlx        = Excellent speed, much better accuracy
+# mlx-community/whisper-small-mlx       = Balanced: good accuracy, fast (~0.5s per call)
+# mlx-community/whisper-large-v3-turbo  = State of the art, but SLOW (~3s per call, causes UI lag)
+MODEL = os.environ.get("WHISPER_MODEL", "mlx-community/whisper-small-mlx")
 SAMPLE_RATE = 16000
-CHUNK_INTERVAL = 0.5  # How often (seconds) the dispatch loop checks for new audio
+CHUNK_INTERVAL = 0.5  # Minimum seconds between dispatch checks
 
 # Tuning constants
 MAX_TRANSCRIBE_SECONDS = 10   # Never send more than this to MLX (prevents GPU stalls)
 AUTO_COMMIT_SECONDS = 8       # Bake text into prefix before buffer hits the cap
+AUTO_COMMIT_OVERLAP = 1       # Seconds of audio to keep after auto-commit for acoustic context
 VAD_SILENCE_THRESHOLD = 0.015 # Amplitude below this = silence (Mac mic noise floor ~0.002)
 VAD_TAIL_SECONDS = 0.5        # Only check the most recent audio for silence (not the whole buffer)
 VAD_WIPE_SECONDS = 5          # Wipe buffer after this much continuous silence
+BACKUP_INTERVAL = 5           # Only write crash backup every N seconds (prevents I/O spam)
 MAX_TRANSCRIBE_SAMPLES = SAMPLE_RATE * MAX_TRANSCRIBE_SECONDS
 AUTO_COMMIT_SAMPLES = SAMPLE_RATE * AUTO_COMMIT_SECONDS
+AUTO_COMMIT_OVERLAP_SAMPLES = SAMPLE_RATE * AUTO_COMMIT_OVERLAP
 VAD_TAIL_SAMPLES = int(SAMPLE_RATE * VAD_TAIL_SECONDS)
 VAD_WIPE_SAMPLES = SAMPLE_RATE * VAD_WIPE_SECONDS
 MIN_AUDIO_SAMPLES = int(SAMPLE_RATE * 0.3)  # Need at least 0.3s of audio to transcribe
@@ -145,6 +147,11 @@ class SiriNoWhispererApp:
         self.focus_lost_to_ui = False
         self.last_alt_r_time = 0
         self.last_transcribe_time = 0
+        self.last_inference_duration = 0.5  # Adaptive dispatch cadence seed
+        self.last_backup_time = 0
+
+        # --- Session Transcript Log ---
+        self.session_log = []
 
         # --- Thread-safe audio buffer ---
         self.audio_data = []
@@ -389,6 +396,19 @@ class SiriNoWhispererApp:
             self.audio_data = []
         
         if final_text and final_text != "Listening...":
+            # Log to session transcript
+            entry = {
+                "index": len(self.session_log) + 1,
+                "time": time.strftime("%I:%M:%S %p"),
+                "text": final_text
+            }
+            self.session_log.append(entry)
+            print(f"\n{'─' * 50}")
+            print(f"📝 SESSION TRANSCRIPT ({len(self.session_log)} entries)")
+            print(f"{'─' * 50}")
+            for e in self.session_log:
+                print(f"  {e['index']:>3}. [{e['time']}] {e['text']}")
+            print(f"{'─' * 50}\n")
             threading.Thread(target=self._paste_text_mac, args=(final_text,), daemon=True).start()
 
     # ──────────────────────────────────────────────────────────────────
@@ -397,32 +417,53 @@ class SiriNoWhispererApp:
     def _dispatch_loop(self):
         """Checks for new audio and dispatches work to the persistent worker thread.
         If the worker is still busy, the work item is silently dropped (queue maxsize=1).
-        This guarantees the loop NEVER blocks regardless of how slow MLX is."""
+        This guarantees the loop NEVER blocks regardless of how slow MLX is.
+        
+        Uses adaptive cadence: dispatch interval scales with actual inference time
+        to prevent queue pileup when the model is slow."""
         while True:
             try:
                 if self.recording and MODE == "local":
                     now = time.time()
-                    if now - self.last_transcribe_time > CHUNK_INTERVAL:
+                    # Adaptive cadence: wait at least 1.2x the last inference duration
+                    adaptive_interval = max(CHUNK_INTERVAL, self.last_inference_duration * 1.2)
+                    if now - self.last_transcribe_time > adaptive_interval:
                         self.last_transcribe_time = now
                         
-                        # Peek at buffer for VAD check (lightweight, no copy)
+                        # Lightweight VAD peek — only check tail chunk, no full concatenation
                         with self.audio_lock:
                             if len(self.audio_data) == 0:
                                 time.sleep(0.1)
                                 continue
-                            audio_peek = np.concatenate(self.audio_data, axis=0)
+                            # Count total samples without concatenating
+                            total_samples = sum(chunk.shape[0] for chunk in self.audio_data)
                         
-                        if len(audio_peek) < MIN_AUDIO_SAMPLES:
+                        if total_samples < MIN_AUDIO_SAMPLES:
                             time.sleep(0.1)
                             continue
                             
-                        # --- VAD Gate ---
-                        if np.max(np.abs(audio_peek)) < VAD_SILENCE_THRESHOLD:
-                            if len(audio_peek) > VAD_WIPE_SAMPLES:
+                        # --- VAD Gate (tail-only — peek at last chunk, no full copy) ---
+                        with self.audio_lock:
+                            tail_chunk = self.audio_data[-1]
+                        tail_is_silent = np.max(np.abs(tail_chunk)) < VAD_SILENCE_THRESHOLD
+                        
+                        if tail_is_silent:
+                            # For wipe check, scan all chunks without concatenating
+                            if total_samples > VAD_WIPE_SAMPLES:
                                 with self.audio_lock:
-                                    self.audio_data = []
+                                    all_silent = all(np.max(np.abs(c)) < VAD_SILENCE_THRESHOLD for c in self.audio_data)
+                                if all_silent:
+                                    with self.audio_lock:
+                                        self.audio_data = []
+                                    if DEBUG:
+                                        print(f"🧹 [{time.strftime('%H:%M:%S')}] VAD wiped {total_samples/SAMPLE_RATE:.1f}s of silent buffer")
                             time.sleep(0.1)
                             continue
+                        
+                        if DEBUG:
+                            print(f"📡 [{time.strftime('%H:%M:%S')}] Dispatch: buffer={total_samples/SAMPLE_RATE:.1f}s, "
+                                  f"tail_amp={np.max(np.abs(tail_chunk)):.4f}, cadence={adaptive_interval:.2f}s, "
+                                  f"queue={'full' if self.work_queue.full() else 'ready'}")
                         
                         # Signal the worker: "audio is ready, come get it"
                         # We send just the session_id — the worker takes its own
@@ -449,8 +490,16 @@ class SiriNoWhispererApp:
         auto-commit wipe, causing the worker to re-transcribe already-committed text."""
         while True:
             try:
-                # Block until signaled (no CPU spin)
-                session_id = self.work_queue.get()
+                # Block until signaled, with timeout for immediate re-check
+                # after completing a transcription (eliminates dead time gap)
+                try:
+                    session_id = self.work_queue.get(timeout=0.3)
+                except queue.Empty:
+                    # No dispatch signal, but if we're actively recording, self-trigger
+                    if self.recording and MODE == "local":
+                        session_id = self.session_id
+                    else:
+                        continue
                 
                 # Stale session check
                 if session_id != self.session_id:
@@ -480,22 +529,75 @@ class SiriNoWhispererApp:
                 if session_id != self.session_id:
                     continue
                 
+                # Strip echoed words from the overlap audio
+                with self.audio_lock:
+                    text = self._strip_overlap_echo(self.text_prefix, text)
+                
                 # --- Auto-Commit ---
                 if buffer_length > AUTO_COMMIT_SAMPLES and text:
                     with self.audio_lock:
                         self.text_prefix += text + " "
-                        self.audio_data = []
+                        # Keep last 1s of audio for acoustic context (prevents word fragmentation)
+                        if len(audio_np) > AUTO_COMMIT_OVERLAP_SAMPLES:
+                            self.audio_data = [audio_np[-AUTO_COMMIT_OVERLAP_SAMPLES:]]
+                        else:
+                            self.audio_data = []
                     # Drain any stale signals that reference pre-wipe state
                     try:
                         self.work_queue.get_nowait()
                     except queue.Empty:
                         pass
+                    if DEBUG:
+                        print(f"📌 [{time.strftime('%H:%M:%S')}] Auto-commit: baked {len(text)} chars into prefix, "
+                              f"kept {AUTO_COMMIT_OVERLAP}s overlap")
                     self.ui_queue.put(lambda sid=session_id: self._update_text_widget("", sid))
+                    # Deferred GC: schedule for 2s later so it doesn't block the hot path
+                    threading.Timer(2.0, gc.collect).start()
                 else:
                     self.ui_queue.put(lambda t=text, sid=session_id: self._update_text_widget(t, sid))
+                
+                # Cooldown: prevent back-to-back GPU saturation that starves the UI thread
+                time.sleep(0.15)
                     
             except Exception as e:
                 print(f"⚠️ Transcription worker error (recovering): {e}")
+
+    # ──────────────────────────────────────────────────────────────────
+    # Overlap Deduplication
+    # ──────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _strip_overlap_echo(prefix, new_text):
+        """Remove echoed words from the start of new_text that duplicate the
+        tail of prefix.  This happens because auto-commit keeps 1s of audio
+        overlap for acoustic context, and Whisper re-transcribes those words.
+
+        Uses word-level suffix/prefix matching (case-insensitive) to find the
+        longest overlap and strip it from new_text."""
+        if not prefix or not new_text:
+            return new_text
+
+        prefix_words = prefix.rstrip().lower().split()
+        new_words_lower = new_text.lower().split()
+        new_words_orig = new_text.split()
+
+        # Check up to 8 words of overlap (1s of audio ≈ 2-4 spoken words,
+        # but Whisper may expand context slightly)
+        max_check = min(8, len(prefix_words), len(new_words_lower))
+
+        best_overlap = 0
+        for overlap_len in range(1, max_check + 1):
+            # Does the tail of prefix match the head of new_text?
+            if prefix_words[-overlap_len:] == new_words_lower[:overlap_len]:
+                best_overlap = overlap_len
+
+        if best_overlap > 0:
+            stripped = " ".join(new_words_orig[best_overlap:])
+            if DEBUG:
+                echo = " ".join(new_words_orig[:best_overlap])
+                print(f"🔇 [{time.strftime('%H:%M:%S')}] Stripped {best_overlap}-word overlap echo: '{echo}'")
+            return stripped
+
+        return new_text
 
     # ──────────────────────────────────────────────────────────────────
     # Transcription Engine
@@ -514,18 +616,29 @@ class SiriNoWhispererApp:
         return False
 
     def _transcribe_chunk(self, audio_np):
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.wav')
-        os.close(temp_fd)
         try:
-            sf.write(temp_path, audio_np, SAMPLE_RATE)
+            # Pass numpy array directly to mlx_whisper — no temp file I/O needed
+            audio_flat = audio_np.squeeze().astype(np.float32)
+            
+            t0 = time.time()
+            if DEBUG:
+                print(f"🔄 [{time.strftime('%H:%M:%S')}] Transcribing {len(audio_flat)/SAMPLE_RATE:.1f}s of audio...")
             
             result = mlx_whisper.transcribe(
-                temp_path, 
+                audio_flat, 
                 path_or_hf_repo=MODEL, 
                 condition_on_previous_text=False,
                 initial_prompt=JARGON
             )
             text = result.get('text', '').strip()
+            
+            elapsed = time.time() - t0
+            # Feed back to adaptive dispatch cadence
+            self.last_inference_duration = elapsed
+            
+            if DEBUG:
+                print(f"✅ [{time.strftime('%H:%M:%S')}] Result ({elapsed:.1f}s): '{text[:80]}{'...' if len(text) > 80 else ''}'")
+            
             if not text:
                 return ""
                 
@@ -555,11 +668,6 @@ class SiriNoWhispererApp:
         except Exception as e:
             print(f"Transcription error: {e}")
             return ""
-        finally:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
 
     # ──────────────────────────────────────────────────────────────────
     # UI Updates (called on Tkinter main thread via ui_queue)
@@ -588,13 +696,18 @@ class SiriNoWhispererApp:
         else:
             self.text_widget.see(tk.END)
         
-        # Crash backup
-        try:
-            backup_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup.txt")
-            with open(backup_path, "w") as f:
-                f.write(full_text)
-        except Exception:
-            pass
+        # Crash backup — throttled to every BACKUP_INTERVAL seconds to prevent I/O spam
+        now = time.time()
+        if now - self.last_backup_time > BACKUP_INTERVAL:
+            self.last_backup_time = now
+            def _write_backup(content):
+                try:
+                    backup_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup.txt")
+                    with open(backup_path, "w") as f:
+                        f.write(content)
+                except Exception:
+                    pass
+            threading.Thread(target=_write_backup, args=(full_text,), daemon=True).start()
 
     # ──────────────────────────────────────────────────────────────────
     # Paste Macro (runs in its own thread to avoid blocking UI)
